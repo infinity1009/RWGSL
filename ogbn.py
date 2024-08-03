@@ -24,6 +24,9 @@ def training_process(args, evaluator, adj_tensor, features, processed_features, 
     model = get_model(args, nfeat, labels.max().item() + 1).to(device)
 
     if args.model == "SAGE":
+        # processed_features = processed_features.to(device)
+        # adj_tensor = adj_tensor.to(device)
+        # labels = labels.to(device)
         best_val_acc, test_acc, train_time, preds = train_eval_SAGE(model, evaluator, processed_features, labels, adj_tensor, args, idx_train, idx_val, idx_test)
     else:
         if args.model == "SIGN":
@@ -195,8 +198,10 @@ def train_eval(
             test_acc, test_preds = test(
                 model, test_features, test_labels, evaluator, device, eval_batch_size
             )
+            # print(f"val accuracy: {val_acc:.4f}, test accuracy: {test_acc:.4f}")
             early_stopping(val_acc, test_acc, model, (val_preds, test_preds))
             if early_stopping.early_stop:
+                # print(f"early stop at {epoch}, best acc: {early_stopping.test_score}.")
                 break
 
     return early_stopping.best_score, early_stopping.test_score, perf_counter() - t, early_stopping.preds
@@ -234,15 +239,13 @@ if __name__ == "__main__":
     parser.add_argument("--walk_len", type=int, default=5, help="length of random walk")
     parser.add_argument("--high", type=float, default=0.8, help="threshold of adding edge")
     parser.add_argument("--low", type=float, default=0.1, help="threshold of deleting edge")
-    parser.add_argument("--topk", type=int, default=-1, help="select the most top k similar neighbor nodes")
-    parser.add_argument('--random_sample', action='store_true', default=False, help="whether to do neighborhood sampling")
-    parser.add_argument('--separate_1', type=int, default=3, help="degree threshold 1")
+    parser.add_argument('--num_samples', type=str, default='10,10,10', help="layer-wise sampling size")
     parser.add_argument('--first_coe', type=float, default=0.5)
     parser.add_argument('--second_coe', type=float, default=0.25)
     parser.add_argument('--third_coe', type=float, default=0.5)
-    parser.add_argument('--fourth_coe', type=float, default=1.)
 
     args = parser.parse_args()
+    args.num_samples = [int(layer_size) for layer_size in args.num_samples.split(',')]
     device = f"cuda:{args.device}" if args.device > -1 else "cpu"
 
     set_seed(args.seed, args.device!=-1)
@@ -250,39 +253,53 @@ if __name__ == "__main__":
     adj, features, labels, p_labels, idx_train, idx_val, idx_test, evaluator = load_ogb_data(args.dataset, noise=args.noise)
     p_labels = p_labels.squeeze(1)
     print("Finished data loading.")
-
+    
     if args.train_ori:
         test_acc_list = []
         processed_features, _, adj_tensor = precompute(args, adj, features)
-        for _ in range(10):
+        for _ in range(5):
             best_val_acc, test_acc, train_time, _ = training_process(
                 args, evaluator, adj_tensor, features, processed_features, labels, features.shape[1], idx_train, idx_val, idx_test, device
             )
             print(f"TEST ACC: {test_acc:.4f}")
             test_acc_list.append(test_acc)
         print("#" * 30)
-        print(
-            "Original Graph Test\nMean Test Acc: {:.4f}, Std: {:.4f}".format(
-                np.mean(test_acc_list), np.std(test_acc_list)
-            )
-        )
+        print("Original Graph Test\nMean Test Acc: {:.4f}, Std: {:.4f}".format(np.mean(test_acc_list), np.std(test_acc_list)))
 
-    n = 0
-    while n < args.update:
-        smooth_labels = get_smooth_labels(adj, p_labels, args.lp_num_layers, args.lp_alpha)
-        adj = modify_structure(adj, features, smooth_labels, args).tocsr()
-        n += 1
-    end_t = perf_counter()
-    print(f"Optimization process takes {(end_t - start_t)/60} mins")
-    
-    test_acc_list = []
-    processed_features, _, adj_tensor = precompute(args, adj, features)
-    
-    for _ in range(10):
-        best_val_acc, test_acc, train_time, _ = training_process(
+    if os.path.exists(f"data/optimized/{args.dataset}_adj_{args.noise}_modified.npz"):
+        print("Load optimized graph!")
+        adj = sp.load_npz(f"data/optimized/{args.dataset}_adj_{args.noise}_modified.npz")
+        test_acc_list = []
+        processed_features, _, adj_tensor = precompute(args, adj, features)
+        for _ in range(5):
+            start_time = perf_counter()
+            best_val_acc, test_acc, train_time, _ = training_process(
                 args, evaluator, adj_tensor, features, processed_features, labels, features.shape[1], idx_train, idx_val, idx_test, device
             )
-        test_acc_list.append(test_acc)
+            print(f"TEST ACC: {test_acc:.4f}")
+            test_acc_list.append(test_acc)
+            print(f"running time: {perf_counter()-start_time}")
+        print("Finally -- Optimized Augmented Graph Test\nMean Test Acc: {:.4f}, Std: {:.4f}".format(np.mean(test_acc_list), np.std(test_acc_list)))
 
-    print("Finally -- Optimized Augmented Graph Test\nMean Test Acc: {:.4f}, Std: {:.4f}" \
-        .format(np.mean(test_acc_list), np.std(test_acc_list)))
+    else:
+        n = 0
+        while n < args.update:
+            smooth_labels = get_smooth_labels(adj, p_labels, args.lp_num_layers, args.lp_alpha)
+            adj = modify_structure(adj, features, smooth_labels, args).tocsr()
+            n += 1
+        end_t = perf_counter()
+        print(f"Optimization process takes {(end_t - start_t)/60} mins")
+        
+        test_acc_list = []
+        processed_features, _, adj_tensor = precompute(args, adj, features)
+        
+        for _ in range(3):
+            start_time = perf_counter()
+            best_val_acc, test_acc, train_time, _ = training_process(
+                    args, evaluator, adj_tensor, features, processed_features, labels, features.shape[1], idx_train, idx_val, idx_test, device
+                )
+            test_acc_list.append(test_acc)
+            print(f"SAGE training time: {(perf_counter()-start_time)/60} mins")
+
+        print("Finally -- Optimized Augmented Graph Test\nMean Test Acc: {:.4f}, Std: {:.4f}" \
+            .format(np.mean(test_acc_list), np.std(test_acc_list)))

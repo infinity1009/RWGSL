@@ -44,6 +44,7 @@ def train_eval(model, features, labels, adj, args, idx_train, idx_val, idx_test)
             test_mif1, test_maf1 = f1(output[idx_test], labels[idx_test])
             early_stopping(val_maf1, (test_mif1, test_maf1), model)
             if early_stopping.early_stop:
+                # print(f"early stop at {epoch}")
                 break
 
     train_time = perf_counter() - t
@@ -62,6 +63,7 @@ if __name__ == "__main__":
         default=False,
         help="whether to train on original graph",
     )
+    parser.add_argument('--pool_num', type=int, default=5, help="pool nums")
     parser.add_argument("--hidden_channels", type=int, default=256)
     parser.add_argument("--dropout", type=float, default=0.15)
     parser.add_argument("--seed", type=int, default=123, help="Random seed.")
@@ -72,12 +74,6 @@ if __name__ == "__main__":
         type=float,
         default=0.001,
         help="Weight decay (L2 loss on parameters).",
-    )
-    parser.add_argument(
-        "--random_sample",
-        action="store_true",
-        default=False,
-        help="whether to do neighborhood sampling",
     )
     parser.add_argument("--model", type=str, default="GCN-hetero", help="model to use.")
     parser.add_argument('--lp_num_layers', type=int,
@@ -90,15 +86,13 @@ if __name__ == "__main__":
     ) 
     parser.add_argument("--high", type=float, default=0.8, help="threshold of adding edge")
     parser.add_argument("--low", type=float, default=0.1, help="threshold of deleting edge")
-    parser.add_argument(
-        "--topk", type=int, default=-1, help="select the most top k similar neighbor nodes"
-    )
+    parser.add_argument('--num_samples', type=str, default='10,10,10', help="layer-wise sampling size")
     parser.add_argument("--first_coe", type=float, default=0.5)
     parser.add_argument("--second_coe", type=float, default=0.25)
     parser.add_argument("--third_coe", type=float, default=0.5)
-    parser.add_argument("--fourth_coe", type=float, default=1.)
     
     args = parser.parse_args()
+    args.num_samples = [int(layer_size) for layer_size in args.num_samples.split(',')]
     device = f"cuda:{args.device}" if args.device > -1 else "cpu"
 
     set_seed(args.seed, args.device!=-1)
@@ -123,22 +117,23 @@ if __name__ == "__main__":
             )
         )
 
-    n = 0
-    while n < args.update:
-        smooth_labels = get_smooth_labels(adj, p_labels, args.lp_num_layers, args.lp_alpha)
-        adj = modify_structure(adj, features, smooth_labels, args).tocsr()
-        n += 1
+    if os.path.exists(f"data/optimized/{args.dataset}_adj_none_modified.npz"):
+        adj = sp.load_npz(f"data/optimized/{args.dataset}_adj_none_modified.npz")
+        test_mif1_list = []
+        test_maf1_list = []
 
-    test_mif1_list = []
-    test_maf1_list = []
+        processed_features, _, adj_tensor = precompute(args, adj, features.numpy())
+        for _ in range(10):
+            best_val_maf1, test_f1, train_time = training_process(args, adj_tensor, processed_features, labels, nfeat, idx_train, idx_val, idx_test, device)
+            test_mif1_list.append(test_f1[0].item())
+            test_maf1_list.append(test_f1[1].item())
+        print("Finally -- Optimized Augmented Graph Test\nMean Test Micro F1: {:.4f}, Std: {:.4f}\nMean Test Macro F1: {:.4f}, Std: {:.4f}".format(
+                np.mean(test_mif1_list), np.std(test_mif1_list), np.mean(test_maf1_list), np.std(test_maf1_list)))
 
-    processed_features, _, adj_tensor = precompute(args, adj, features.numpy())
-    for _ in range(10):
-        best_val_maf1, test_f1, train_time = training_process(args, adj_tensor, processed_features, labels, nfeat, idx_train, idx_val, idx_test, device)
-        test_mif1_list.append(test_f1[0].item())
-        test_maf1_list.append(test_f1[1].item())
-    print(
-        "Finally -- Optimized Augmented Graph Test\nMean Test Micro F1: {:.4f}, Std: {:.4f}\nMean Test Macro F1: {:.4f}, Std: {:.4f}".format(
-            np.mean(test_mif1_list), np.std(test_mif1_list), np.mean(test_maf1_list), np.std(test_maf1_list)
-        )
-    )
+    else:
+        n = 0
+        while n < args.update:
+            smooth_labels = get_smooth_labels(adj, p_labels, args.lp_num_layers, args.lp_alpha)
+            adj = modify_structure(adj, features, smooth_labels, args).tocsr()
+            n += 1
+            # sp.save_npz(f"data/{args.dataset}_adj_none_modified_{n}.npz", adj)

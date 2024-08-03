@@ -5,7 +5,7 @@ import pickle as pkl
 import networkx as nx
 import scipy.sparse as sp
 from ogb.nodeproppred import PygNodePropPredDataset, Evaluator
-
+from torch_geometric.utils import mask_to_index
 from normalization import row_normalize
 
 def parse_index_file(filename):
@@ -14,6 +14,34 @@ def parse_index_file(filename):
     for line in open(filename):
         index.append(int(line.strip()))
     return index
+
+def random_drop_edge(adj, drop_rate, name):
+    row, col = adj.nonzero()
+    num_nodes = max(row.max(), col.max()) + 1
+    edge_num = adj.nnz
+    drop_edge_num = int(edge_num * drop_rate)
+    edge_mask = np.ones(edge_num, dtype=bool)
+    indices = np.random.permutation(edge_num)[:drop_edge_num]
+    edge_mask[indices] = False
+    row, col = row[edge_mask], col[edge_mask]
+    data = np.ones(edge_num - drop_edge_num)
+    adj = sp.csr_matrix((data, (row, col)), shape=(num_nodes, num_nodes))
+    sp.save_npz(f"./data/random/{name}/drop_{str(drop_rate)}.npz", adj)
+    return adj
+
+def random_add_edge(adj, add_rate, name):
+    row, col = adj.nonzero()
+    num_nodes = max(row.max(), col.max()) + 1
+    edge_num = adj.nnz
+    num_edges_to_add = int(edge_num * add_rate)
+    row_ = np.random.randint(0, num_nodes, size=(num_edges_to_add,))
+    col_ = np.random.randint(0, num_nodes, size=(num_edges_to_add,))
+    new_row = np.concatenate((row, row_), axis=0)
+    new_col = np.concatenate((col, col_), axis=0)
+    data = np.ones(edge_num + num_edges_to_add)
+    adj = sp.csr_matrix((data, (new_row, new_col)), shape=(num_nodes, num_nodes))
+    sp.save_npz(f"./data/random/{name}/add_{str(add_rate)}.npz", adj)
+    return adj
 
 def load_hetero(dataset='acm'):
     dataset_dir = f'data/{dataset}/'
@@ -133,7 +161,24 @@ def load_citation_data(dataset_str="cora", drop_rate=0, add_rate=0, mask_feat_ra
     idx_val = torch.LongTensor(idx_val)
     idx_test = torch.LongTensor(idx_test)
 
-    p_labels = np.load(open(f"data/{dataset_str}/{dataset_str}_none_p_labels.npy", "rb"))
+    if drop_rate > 0:
+        adj = sp.load_npz(f"data/random/{dataset_str}/drop_{str(drop_rate)}.npz")
+        p_labels = np.load(open(f"data/{dataset_str}/drop_{str(drop_rate)}_p_labels.npy", "rb"))
+        
+    elif add_rate > 0:
+        adj = sp.load_npz(f"data/random/{dataset_str}/add_{str(add_rate)}.npz")
+        p_labels = np.load(open(f"data/{dataset_str}/add_{str(add_rate)}_p_labels.npy", "rb"))
+
+    elif mask_feat_rate > 0:
+        features = torch.load(f"data/random/{dataset_str}/mask_{str(mask_feat_rate)}_feats.pt")
+        p_labels = np.load(open(f"data/{dataset_str}/mask_{str(mask_feat_rate)}_p_labels.npy", "rb"))
+    
+    elif label_per_class < 20:
+        idx_train = torch.load(f"data/random/{dataset_str}/sparse_label_{str(label_per_class)}.pt")
+        p_labels = np.load(open(f"data/{dataset_str}/sparse_{str(label_per_class)}_p_labels.npy", "rb"))
+    
+    else:
+        p_labels = np.load(open(f"data/{dataset_str}/{dataset_str}_none_p_labels.npy", "rb"))
 
     adj = sp.coo_matrix(adj)
     adj.setdiag(0)
@@ -141,3 +186,13 @@ def load_citation_data(dataset_str="cora", drop_rate=0, add_rate=0, mask_feat_ra
     adj = adj.tocsr()
 
     return adj, features, labels, p_labels, idx_train, idx_val, idx_test
+
+def load_heterophily_data(dataset_name):
+    data_path = f'data/{dataset_name}'
+    adj = sp.load_npz(data_path+'/adj.npz')
+    features = torch.load(data_path+'/features.pt')
+    labels = torch.load(data_path+'/labels.pt')
+    masks = np.load(data_path+'/masks.npz')
+    train_masks, val_masks, test_masks = masks['train_masks'], masks['val_masks'], masks['test_masks']
+
+    return adj, features, labels, None, train_masks, val_masks, test_masks

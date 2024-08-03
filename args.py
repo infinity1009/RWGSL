@@ -24,15 +24,8 @@ def get_args():
                         help="threshold of adding edge")
     parser.add_argument('--low', type=float, default=0.1,
                         help="threshold of deleting edge")
-    parser.add_argument('--topk', type=int, default=-1,
-                        help="select the most top k similar neighbor nodes")
-    parser.add_argument('--separate_1', type=int, default=5,
-                        help="degree threshold 1")
-    parser.add_argument('--separate_2', type=int, default=10,
-                        help="degree threshold 2")
-    parser.add_argument('--coefficient', type=float,
-                        default=0.6, help="coefficient in sampling")
-    parser.add_argument('--random_sample', action='store_true', default=False, help="whether to do neighborhood sampling")
+    parser.add_argument('--num_samples', type=str, default='10,10,10',
+                        help="layer-wise sampling size")
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed.')  # 42
     parser.add_argument('--epochs', type=int, default=200,
@@ -69,7 +62,6 @@ def get_args():
     parser.add_argument('--first_coe', type=float, default=0.5)
     parser.add_argument('--second_coe', type=float, default=0.25)
     parser.add_argument('--third_coe', type=float, default=1)
-    parser.add_argument('--fourth_coe', type=float, default=0.5)
 
     args = parser.parse_args()
     return args

@@ -28,6 +28,23 @@ def sparse_mx_to_torch_sparse_tensor(sparse_mx):
     shape = torch.Size(sparse_mx.shape)
     return torch.sparse.FloatTensor(indices, values, shape)
 
+def calculate_similarity(indptr, indices, raw_features, smooth_labels, u, v, sim_types):
+    score, cnt = 0., 0
+    if (sim_types & 1) == 1:
+        score += calculate_feature_similarity(raw_features, u, v)
+        cnt += 1 
+    if ((sim_types >> 1) & 1) == 1:
+        score += calculate_feature_similarity(smooth_labels, u, v)
+        cnt += 1
+    if ((sim_types >> 2) & 1) == 1:
+        score += calculate_Jaccard_coefficient(indptr, indices, u, v)
+        cnt += 1
+    if ((sim_types >> 3) & 1) == 1:
+        score += calculate_AAI(indptr, indices, u, v)
+        cnt += 1
+
+    return score / cnt
+
 def calculate_feature_similarity(features, u, v):
     similarity = torch.sum(torch.mul(features[u], features[v])) / (
         (torch.norm(features[u], p=2) * torch.norm(features[v], p=2))
@@ -40,6 +57,17 @@ def calculate_Jaccard_coefficient(indptr, indices, u, v):
     b = indices[indptr[v] : indptr[v + 1]]
     common_neighbor = len(set(a).intersection(set(b)))
     similarity = common_neighbor / (len(a) + len(b) - common_neighbor)
+    
+    return similarity
+
+def calculate_AAI(indptr, indices, u, v):
+    a = indices[indptr[u] : indptr[u + 1]]
+    b = indices[indptr[v] : indptr[v + 1]]
+    common_neighbor = set(a).intersection(set(b))
+    similarity = 0
+    for node in common_neighbor:
+        deg = indptr[node + 1] - indptr[node]
+        similarity += 1. / math.log(deg, 2)
     
     return similarity
 
@@ -197,15 +225,6 @@ class EarlyStopping:
         save_path="./",
         use_loss=True,
     ):
-        """
-        Args:
-            patience (int): How long to wait after last time validation loss improved.
-                            Default: 7
-            verbose (bool): If True, prints a message for each validation loss improvement.
-                            Default: False
-            delta (float): Minimum change in the monitored quantity to qualify as an improvement.
-                            Default: 0
-        """
         self.patience = patience
         self.save_model = save_model
         self.verbose = verbose

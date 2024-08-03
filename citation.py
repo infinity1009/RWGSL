@@ -68,6 +68,7 @@ def train_eval(model, features, labels, adj, args, idx_train, idx_val, idx_test)
 if __name__ == "__main__":
     # Arguments
     args = get_args()
+    args.num_samples = [int(layer_size) for layer_size in args.num_samples.split(',')]
 
     # setting random seeds
     set_seed(args.seed, args.device!=-1)
@@ -83,40 +84,72 @@ if __name__ == "__main__":
             best_val_acc, test_acc, train_time, _ = training_process(args, adj_tensor, processed_features, labels, nfeat, idx_train, idx_val, idx_test, device)
             test_acc_list.append(test_acc.item())
         print("#" * 30)
+        print("All 10 results: ", test_acc_list)
         print("Original Graph Test\nTotal Time: {:.4f}s, Mean Test Acc: {:.4f}, Std: {:.4f}".format(
             train_time, np.mean(test_acc_list), np.std(test_acc_list)))
+    
+    if os.path.exists(f"data/optimized/{args.dataset}_adj_none_modified.npz"):
+        adj = sp.load_npz(f"data/optimized/{args.dataset}_adj_none_modified.npz")
 
-    n = 0
-    while n < args.update: 
-        start_t = perf_counter()
-        smooth_labels = get_smooth_labels(adj, p_labels, args.lp_num_layers, args.lp_alpha)
+        test_acc_list = []
+        processed_features, _, adj_tensor = precompute(args, adj, features.numpy())
+
+        for _ in range(10):
+            best_val_acc, test_acc, train_time, _ = training_process(args, adj_tensor, processed_features, labels, nfeat, idx_train, idx_val, idx_test, device)
+            test_acc_list.append(test_acc.item())
+        print("Finally -- Optimized Augmented Graph Test\nMean Test Acc: {:.4f}, Std: {:.4f}".format(
+            np.mean(test_acc_list), np.std(test_acc_list)))
+   
+    else:
+        start_o = perf_counter()
+        n = 0
+        while n < args.update: 
+            start_i = perf_counter()
+            smooth_labels = get_smooth_labels(adj, p_labels, args.lp_num_layers, args.lp_alpha)
+            adj = modify_structure(adj, features, smooth_labels, args).tocsr()
+            end_i = perf_counter()
+            if args.verbose:
+                smooth_features = get_smooth_features(adj, features, args.degree, normalization="AugNormAdj", trans_type="SGC")
+                distribution, total_edge = visual_feature_similarity(adj, smooth_features)
+                print("Embedding相似性分布", distribution)
+                print("此时，总边数为:", total_edge)
+
+                time_list = []
+                test_acc_list = []
+                processed_features, _, adj_tensor = precompute(args, adj, features.numpy())
+                
+                for _ in range(10):
+                    start_t = perf_counter()
+                    best_val_acc, test_acc, train_time, _ = training_process(args, adj_tensor, processed_features, labels, nfeat, idx_train, idx_val, idx_test, device)
+                    test_acc_list.append(test_acc.item())
+                    time_list.append(perf_counter()-start_t)
+                
+                print(f"Mean training time: {np.mean(time_list):.4f}, Optimization takes: {end_i-start_i:.4f} sec")
+                print("Iteration: {} -- Optimized Augmented Graph Test\nMean Test Acc: {:.4f}, Std: {:.4f}".format(
+                    n, np.mean(test_acc_list), np.std(test_acc_list)))
+            
+            n += 1
+        
+        print(f"Optimization process takes: {perf_counter() - start_o:.4f} sec")
+
+        if not args.verbose:
+            time_list = []
+            test_acc_list = []
+            processed_features, _, adj_tensor = precompute(args, adj, features.numpy())
+            
+            for _ in range(10):
+                start_t = perf_counter()
+                best_val_acc, test_acc, train_time, _ = training_process(args, adj_tensor, processed_features, labels, nfeat, idx_train, idx_val, idx_test, device)
+                test_acc_list.append(test_acc.item())
+                time_list.append(perf_counter()-start_t)
+            
+            print("Final: {} -- Optimized Augmented Graph Test\nMean Test Acc: {:.4f}, Std: {:.4f}".format(
+                n, np.mean(test_acc_list), np.std(test_acc_list)))
+        
         if args.verbose:
+            adj1 = torch.tensor(adj.todense())
+            print("孤立节点数为:", isolate_node(adj1))
             smooth_features = get_smooth_features(adj, features, args.degree, normalization="AugNormAdj", trans_type="SGC")
             distribution, total_edge = visual_feature_similarity(adj, smooth_features)
             print("Embedding相似性分布", distribution)
             print("此时，总边数为:", total_edge)
-        adj = modify_structure(adj, features, smooth_labels, args).tocsr()
-        n += 1
-
-    end_t = perf_counter()
-    print(f"Optimization process takes: {end_t - start_t:.4f} sec")
-
-    time_list = []
-    test_acc_list = []
-    processed_features, _, adj_tensor = precompute(args, adj, features.numpy())
-    
-    for _ in range(10):
-        t = perf_counter()
-        best_val_acc, test_acc, train_time, _ = training_process(args, adj_tensor, processed_features, labels, nfeat, idx_train, idx_val, idx_test, device)
-        test_acc_list.append(test_acc.item())
-        time_list.append(perf_counter()-t)
-    
-    print(f"Mean training time: {np.mean(time_list):.4f}")
-
-    if args.verbose:
-        adj1 = torch.tensor(adj.todense())
-        print("孤立节点数为:", isolate_node(adj1))
-        smooth_features = get_smooth_features(adj, features, args.degree, normalization="AugNormAdj", trans_type="SGC")
-        distribution, total_edge = visual_feature_similarity(adj, smooth_features)
-        print("Embedding相似性分布", distribution)
-        print("此时，总边数为:", total_edge)
